@@ -52,6 +52,7 @@ An advanced, interactive local email forensics platform that detects phishing at
    # API Keys (VirusTotal & AbuseIPDB)
    VIRUSTOTAL_API_KEY=your_key_here
    ABUSEIPDB_API_KEY=your_key_here
+   MESA_SECURITY_API_KEY=your_key_here
 
    # Settings
    SECRET_KEY=your_secret_key_here
