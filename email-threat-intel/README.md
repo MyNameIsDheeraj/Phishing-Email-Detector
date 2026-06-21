@@ -2,6 +2,7 @@
 
 An advanced, interactive local email forensics platform that detects phishing attempts using rule-based analysis, cryptographic verification (SPF/DKIM/DMARC), and threat reputation API integrations.
 
+
 ---
 
 ## Key Features
