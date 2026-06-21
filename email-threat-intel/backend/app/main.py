@@ -21,6 +21,7 @@ from app.core.parser import EmailParser
 from app.core.rules import RuleBasedDetector
 from app.services.virustotal import VirusTotalService
 from app.services.abuseipdb import AbuseIPDBService
+from app.services.mesa_security import MesaSecurityService
 from app.services.report_generator import generate_pdf_report
 from app.core.auth_checks import validate_spf, validate_dkim, validate_dmarc, check_spamhaus
 
@@ -54,6 +55,7 @@ app.add_middleware(
 detector = RuleBasedDetector()
 vt_service = VirusTotalService()
 abuse_service = AbuseIPDBService()
+mesa_service = MesaSecurityService()
 
 # Database initialization on startup
 @app.on_event("startup")
@@ -71,6 +73,7 @@ async def shutdown_event():
     try:
         await vt_service.close()
         await abuse_service.close()
+        await mesa_service.close()
         print("✅ Services closed successfully")
     except Exception as e:
         print(f"❌ Error closing services: {str(e)}")
@@ -81,7 +84,8 @@ async def shutdown_event():
 def recalculate_threat_score(email: Email, db: Session):
     """
     Recalculates email threat score dynamically based on rule engine results,
-    SPF/DKIM/DMARC status, Spamhaus status, URL analysis, and Attachment reputations.
+    SPF/DKIM/DMARC status, Spamhaus status, URL analysis, Attachment reputations,
+    and Mesa Security scan results.
     """
     # 1. Base rule score
     score = email.rule_score
@@ -120,6 +124,8 @@ def recalculate_threat_score(email: Email, db: Session):
         unverified = [a for a in email.attachments if a.checked_at is None]
         if not unverified:
             email.attachment_verdict = "SAFE"
+        else:
+            email.attachment_verdict = "UNVERIFIED"
     else:
         email.attachment_verdict = "NONE"
         
@@ -131,15 +137,33 @@ def recalculate_threat_score(email: Email, db: Session):
             break
     if has_url_threat:
         score += 15
+    
+    # 6. Mesa Security Scan Results (Penalty: 25)
+    if email.mesa_status == "completed" and email.mesa_verdict:
+        mesa_verdict_lower = email.mesa_verdict.lower()
+        
+        # High threat verdicts
+        if mesa_verdict_lower in ["phishing", "malware", "malicious"]:
+            score += 25
+        # Medium threat verdicts
+        elif mesa_verdict_lower in ["spam", "suspicious", "warning"]:
+            score += 15
+        # Incorporate Mesa score if available
+        elif email.mesa_score and email.mesa_score > 0:
+            score += min(25, email.mesa_score // 4)  # Max 25 points
+        
+    # Alternative: Use Mesa score directly if verdict not available
+    elif email.mesa_score and email.mesa_score > 50:
+        score += min(25, email.mesa_score // 4)
         
     # Cap score at 100
     email.threat_score = min(100, score)
     
     # Update overall verdict & confidence
-    if email.threat_score >= 70:
+    if email.threat_score >= 60:
         email.verdict = "MALICIOUS"
         email.confidence = "HIGH"
-    elif email.threat_score >= 40:
+    elif email.threat_score >= 25:
         email.verdict = "SUSPICIOUS"
         email.confidence = "MEDIUM"
     else:
@@ -174,7 +198,8 @@ async def health_check(db: Session = Depends(get_db)):
         "database": db_status,
         "services": {
             "virustotal": "configured" if os.getenv("VIRUSTOTAL_API_KEY") else "not configured",
-            "abuseipdb": "configured" if os.getenv("ABUSEIPDB_API_KEY") else "not configured"
+            "abuseipdb": "configured" if os.getenv("ABUSEIPDB_API_KEY") else "not configured",
+            "mesa_security": "configured" if os.getenv("MESA_SECURITY_API_KEY") else "not configured"
         },
         "timestamp": datetime.utcnow().isoformat()
     }
@@ -272,7 +297,7 @@ async def upload_email(
             spf_status=spf_status,
             dkim_status=dkim_status,
             dmarc_status=dmarc_status,
-            attachment_verdict="NONE" if not attachments else "SAFE",
+            attachment_verdict="NONE" if not attachments else "UNVERIFIED",
             received_at=datetime.utcnow()
         )
         db.add(db_email)
@@ -399,7 +424,7 @@ async def upload_email(
         
         # Trigger background threat intel enrichment
         if background_tasks:
-            if os.getenv("VIRUSTOTAL_API_KEY") or os.getenv("ABUSEIPDB_API_KEY"):
+            if os.getenv("VIRUSTOTAL_API_KEY") or os.getenv("ABUSEIPDB_API_KEY") or os.getenv("MESA_SECURITY_API_KEY"):
                 background_tasks.add_task(
                     enrich_email_background,
                     email_id=db_email.id
@@ -475,7 +500,7 @@ async def analyze_email_text(
             spf_status=spf_status,
             dkim_status=dkim_status,
             dmarc_status=dmarc_status,
-            attachment_verdict="NONE" if not attachments else "SAFE",
+            attachment_verdict="NONE" if not attachments else "UNVERIFIED",
             received_at=datetime.utcnow()
         )
         db.add(db_email)
@@ -568,7 +593,7 @@ async def analyze_email_text(
         
         # Trigger background threat intel enrichment
         if background_tasks:
-            if os.getenv("VIRUSTOTAL_API_KEY") or os.getenv("ABUSEIPDB_API_KEY"):
+            if os.getenv("VIRUSTOTAL_API_KEY") or os.getenv("ABUSEIPDB_API_KEY") or os.getenv("MESA_SECURITY_API_KEY"):
                 background_tasks.add_task(
                     enrich_email_background,
                     email_id=db_email.id
@@ -1100,6 +1125,88 @@ async def enrich_email_background(email_id: int):
                     except Exception as e:
                         print(f"Background VT File error: {e}")
                         
+            # 4. Mesa Security Email Scanning
+            mesa_configured = bool(os.getenv("MESA_SECURITY_API_KEY"))
+            if mesa_configured:
+                try:
+                    # Get raw email content
+                    raw_email_content = ""
+                    # Reconstruct email from stored fields
+                    for header_key, header_value in email.headers.items():
+                        raw_email_content += f"{header_key}: {header_value}\n"
+                    raw_email_content += "\n" + (email.body or "")
+                    
+                    email_bytes = raw_email_content.encode('utf-8')
+                    
+                    db.add(Event(
+                        email_id=email.id,
+                        event_type="MESA_SCAN_STARTED",
+                        description="Mesa Security scan initiated",
+                        severity="INFO"
+                    ))
+                    db.commit()
+                    
+                    result = await mesa_service.scan_email(
+                        email_bytes,
+                        filename=f"email_{email.id}.eml",
+                        save_screenshot=True,
+                        save_email=False
+                    )
+                    
+                    if "error" not in result:
+                        email.mesa_job_id = result.get("job_id")
+                        email.mesa_status = result.get("status", "unknown")
+                        
+                        # Parse Mesa results
+                        mesa_result = result.get("result", {})
+                        email.mesa_details = mesa_result
+                        
+                        # Extract verdict from Mesa results
+                        if mesa_result:
+                            # Mesa might provide a verdict field or we need to analyze the result
+                            if "verdict" in mesa_result:
+                                email.mesa_verdict = mesa_result.get("verdict")
+                            elif "classification" in mesa_result:
+                                email.mesa_verdict = mesa_result.get("classification")
+                            
+                            # Try to extract a score from Mesa results
+                            if "threat_score" in mesa_result:
+                                email.mesa_score = min(100, int(mesa_result.get("threat_score", 0)))
+                            elif "risk_score" in mesa_result:
+                                email.mesa_score = min(100, int(mesa_result.get("risk_score", 0)))
+                        
+                        email.mesa_scanned_at = datetime.utcnow()
+                        
+                        db.add(Event(
+                            email_id=email.id,
+                            event_type="MESA_SCAN_COMPLETE",
+                            description=f"Mesa Security scan completed. Verdict: {email.mesa_verdict}. Score: {email.mesa_score}",
+                            severity="WARNING" if email.mesa_verdict and email.mesa_verdict.lower() != "clean" else "INFO"
+                        ))
+                    else:
+                        error_msg = result.get("error", "Unknown error")
+                        email.mesa_status = "failed"
+                        
+                        db.add(Event(
+                            email_id=email.id,
+                            event_type="MESA_SCAN_FAILED",
+                            description=f"Mesa Security scan failed: {error_msg}",
+                            severity="WARNING"
+                        ))
+                    
+                    db.commit()
+                    
+                except Exception as e:
+                    print(f"Background Mesa Security error: {e}")
+                    email.mesa_status = "error"
+                    db.add(Event(
+                        email_id=email.id,
+                        event_type="MESA_SCAN_ERROR",
+                        description=f"Mesa Security scan error: {str(e)}",
+                        severity="WARNING"
+                    ))
+                    db.commit()
+                        
             # Recalculate and update
             recalculate_threat_score(email, db)
             
@@ -1140,6 +1247,194 @@ async def delete_email(
         "message": f"Email {email_id} deleted successfully",
         "id": email_id
     }
+
+
+# ===================== MESA SECURITY ENDPOINTS =====================
+
+@app.post("/email/{email_id}/mesa-scan")
+async def scan_email_with_mesa(
+    email_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Manually trigger a Mesa Security scan for a specific email
+    """
+    if not os.getenv("MESA_SECURITY_API_KEY"):
+        raise HTTPException(
+            status_code=400,
+            detail="Mesa Security API key not configured"
+        )
+    
+    email = db.query(Email).filter(Email.id == email_id).first()
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    try:
+        # Reconstruct raw email content
+        raw_email_content = ""
+        if email.headers:
+            for header_key, header_value in email.headers.items():
+                raw_email_content += f"{header_key}: {header_value}\n"
+        raw_email_content += "\n" + (email.body or "")
+        
+        email_bytes = raw_email_content.encode('utf-8')
+        
+        # Log event
+        db.add(Event(
+            email_id=email.id,
+            event_type="MESA_MANUAL_SCAN_STARTED",
+            description="Manual Mesa Security scan initiated",
+            severity="INFO"
+        ))
+        db.commit()
+        
+        # Submit to Mesa
+        result = await mesa_service.scan_email(
+            email_bytes,
+            filename=f"email_{email.id}.eml",
+            save_screenshot=True,
+            save_email=False
+        )
+        
+        if "error" in result:
+            error_msg = result.get("error", "Unknown error")
+            email.mesa_status = "failed"
+            
+            db.add(Event(
+                email_id=email.id,
+                event_type="MESA_MANUAL_SCAN_FAILED",
+                description=f"Mesa Security manual scan failed: {error_msg}",
+                severity="WARNING"
+            ))
+            db.commit()
+            
+            raise HTTPException(
+                status_code=400,
+                detail=f"Mesa scan failed: {error_msg}"
+            )
+        
+        # Update email with scan results
+        email.mesa_job_id = result.get("job_id")
+        email.mesa_status = result.get("status", "unknown")
+        
+        # Parse results
+        mesa_result = result.get("result", {})
+        email.mesa_details = mesa_result
+        
+        if mesa_result:
+            if "verdict" in mesa_result:
+                email.mesa_verdict = mesa_result.get("verdict")
+            elif "classification" in mesa_result:
+                email.mesa_verdict = mesa_result.get("classification")
+            
+            if "threat_score" in mesa_result:
+                email.mesa_score = min(100, int(mesa_result.get("threat_score", 0)))
+            elif "risk_score" in mesa_result:
+                email.mesa_score = min(100, int(mesa_result.get("risk_score", 0)))
+        
+        email.mesa_scanned_at = datetime.utcnow()
+        
+        db.add(Event(
+            email_id=email.id,
+            event_type="MESA_MANUAL_SCAN_COMPLETE",
+            description=f"Mesa Security manual scan completed. Verdict: {email.mesa_verdict}. Score: {email.mesa_score}",
+            severity="WARNING" if email.mesa_verdict and email.mesa_verdict.lower() != "clean" else "INFO"
+        ))
+        
+        # Recalculate overall threat score
+        recalculate_threat_score(email, db)
+        db.commit()
+        
+        return {
+            "email_id": email_id,
+            "mesa_job_id": email.mesa_job_id,
+            "mesa_status": email.mesa_status,
+            "mesa_verdict": email.mesa_verdict,
+            "mesa_score": email.mesa_score,
+            "mesa_details": email.mesa_details,
+            "overall_threat_score": email.threat_score,
+            "overall_verdict": email.verdict,
+            "message": "Mesa Security scan completed successfully"
+        }
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        print(f"Error in manual Mesa scan: {str(e)}")
+        email.mesa_status = "error"
+        db.add(Event(
+            email_id=email.id,
+            event_type="MESA_MANUAL_SCAN_ERROR",
+            description=f"Mesa Security scan error: {str(e)}",
+            severity="ERROR"
+        ))
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Mesa scan error: {str(e)}"
+        )
+
+
+@app.get("/email/{email_id}/mesa-results")
+async def get_mesa_results(
+    email_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    Get Mesa Security scan results for a specific email
+    """
+    email = db.query(Email).filter(Email.id == email_id).first()
+    if not email:
+        raise HTTPException(status_code=404, detail="Email not found")
+    
+    if not email.mesa_job_id:
+        return {
+            "email_id": email_id,
+            "message": "No Mesa scan results available for this email",
+            "mesa_status": None
+        }
+    
+    return {
+        "email_id": email_id,
+        "mesa_job_id": email.mesa_job_id,
+        "mesa_status": email.mesa_status,
+        "mesa_verdict": email.mesa_verdict,
+        "mesa_score": email.mesa_score,
+        "mesa_details": email.mesa_details,
+        "mesa_scanned_at": email.mesa_scanned_at.isoformat() if email.mesa_scanned_at else None
+    }
+
+
+@app.get("/mesa/job/{job_id}")
+async def get_mesa_job_status(job_id: str):
+    """
+    Get the status of a Mesa Security scan job by job ID
+    """
+    if not os.getenv("MESA_SECURITY_API_KEY"):
+        raise HTTPException(
+            status_code=400,
+            detail="Mesa Security API key not configured"
+        )
+    
+    try:
+        result = await mesa_service.get_job_status(job_id)
+        
+        if "error" in result:
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "Failed to get job status")
+            )
+        
+        return result
+        
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error checking job status: {str(e)}"
+        )
+
 
 
 # ===================== ERROR HANDLERS =====================

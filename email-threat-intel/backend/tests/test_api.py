@@ -1,3 +1,6 @@
+import os
+os.environ["MOCK_DNS"] = "true"
+
 import unittest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -5,6 +8,8 @@ from app.main import app
 class TestAPIEndpoints(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        from app.models.database import init_db
+        init_db()
         cls.client = TestClient(app)
 
     def test_root_endpoint(self):

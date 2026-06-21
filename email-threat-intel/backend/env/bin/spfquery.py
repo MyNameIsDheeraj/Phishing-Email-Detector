@@ -1,4 +1,4 @@
-#!/home/hellbat/Project/Phishing Email Detector/email-threat-intel/backend/env/bin/python3.12
+#!/home/hellbat/Project/Phishing-Email-Detector/email-threat-intel/backend/env/bin/python
 
 # Author: Stuart D. Gathman <stuart@bmsi.com>
 # Copyright 2004 Business Management Systems, Inc.

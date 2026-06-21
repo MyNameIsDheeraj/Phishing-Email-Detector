@@ -5,7 +5,7 @@ import spf
 from typing import Tuple
 
 # Environment configurations for testing
-MOCK_DNS = os.getenv("MOCK_DNS", "true").lower() == "true"
+MOCK_DNS = os.getenv("MOCK_DNS", "false").lower() == "true"
 
 def validate_spf(ip: str, sender_email: str) -> str:
     """

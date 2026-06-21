@@ -1,3 +1,6 @@
+import os
+os.environ["MOCK_DNS"] = "true"
+
 import unittest
 from app.core.parser import EmailParser
 from app.core.rules import RuleBasedDetector
@@ -80,6 +83,69 @@ SGVsbG8gV29ybGQh
         # Test mock Spamhaus validation
         self.assertTrue(check_spamhaus("1.2.3.4"))
         self.assertFalse(check_spamhaus("127.0.0.1"))
+
+    def test_new_heuristic_rules(self):
+        detector = RuleBasedDetector()
+        
+        # Test 1: Brand misuse in free email local part
+        email_data_1 = {
+            'sender': 'paypal-support@gmail.com',
+            'subject': 'Alert',
+            'body': 'Hello',
+            'headers': {'from': 'paypal-support@gmail.com'},
+            'urls': [],
+            'domains': []
+        }
+        res1 = detector.analyze(email_data_1)
+        self.assertIn("Brand 'paypal' misused in free email local part", "".join(res1['details']))
+        
+        # Test 2: Display name spoofing
+        email_data_2 = {
+            'sender': 'attacker@scam-mail.com',
+            'subject': 'Alert',
+            'body': 'Hello',
+            'headers': {'from': 'PayPal Support <attacker@scam-mail.com>'},
+            'urls': [],
+            'domains': ['scam-mail.com']
+        }
+        res2 = detector.analyze(email_data_2)
+        self.assertIn("Brand 'paypal' in display name doesn't match sender domain", "".join(res2['details']))
+        
+        # Test 3: Link shorteners
+        email_data_3 = {
+            'sender': 'test@test.com',
+            'subject': 'Check this',
+            'body': 'Link: http://bit.ly/12345',
+            'headers': {},
+            'urls': ['http://bit.ly/12345'],
+            'domains': ['bit.ly']
+        }
+        res3 = detector.analyze(email_data_3)
+        self.assertIn("Uses link shortener: bit.ly", "".join(res3['details']))
+        
+        # Test 4: Raw IP URL
+        email_data_4 = {
+            'sender': 'test@test.com',
+            'subject': 'Check this',
+            'body': 'Link: http://192.168.1.1/verify',
+            'headers': {},
+            'urls': ['http://192.168.1.1/verify'],
+            'domains': []
+        }
+        res4 = detector.analyze(email_data_4)
+        self.assertIn("URL uses raw IP address", "".join(res4['details']))
+
+        # Test 5: IDN homograph domain
+        email_data_5 = {
+            'sender': 'test@test.com',
+            'subject': 'Check this',
+            'body': 'Link: http://xn--pypal-43d.com/login',
+            'headers': {},
+            'urls': ['http://xn--pypal-43d.com/login'],
+            'domains': ['xn--pypal-43d.com']
+        }
+        res5 = detector.analyze(email_data_5)
+        self.assertIn("Detected potential IDN homograph domain spoofing", "".join(res5['details']))
 
     def test_pdf_report_generation(self):
         from app.services.report_generator import generate_pdf_report

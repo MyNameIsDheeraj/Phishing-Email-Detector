@@ -15,7 +15,6 @@ import {
   Globe, 
   File, 
   Search, 
-  Clock, 
   ChevronRight, 
   CheckCircle, 
   AlertTriangle, 
@@ -76,12 +75,6 @@ function App() {
       setToast(null);
     }, 4000);
   };
-
-  // Initialize and check health
-  useEffect(() => {
-    checkHealthAndLoadStats();
-    loadRecentEmails();
-  }, []);
 
   // Check health and dashboard stats
   const checkHealthAndLoadStats = async () => {
@@ -267,6 +260,15 @@ function App() {
       showToast(err.message, 'error');
     }
   };
+
+  // Initialize and check health - MOVED AFTER all function declarations
+  useEffect(() => {
+    const init = async () => {
+      await checkHealthAndLoadStats();
+      await loadRecentEmails();
+    };
+    init();
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Get color configurations based on verdict
   const getVerdictStyles = (verdict) => {

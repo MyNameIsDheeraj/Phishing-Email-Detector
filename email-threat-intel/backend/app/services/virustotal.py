@@ -39,11 +39,21 @@ class VirusTotalService:
                 
                 if analysis_id:
                     # Get results
-                    await asyncio.sleep(2)  # Wait for analysis
+                    await asyncio.sleep(2.5)  # Wait for analysis
                     result = await session.get(
                         f"{self.base_url}/analyses/{analysis_id}"
                     )
-                    return result.json()
+                    if result.status_code == 200:
+                        res_data = result.json()
+                        stats = res_data.get("data", {}).get("attributes", {}).get("stats", {})
+                        if stats:
+                            return {
+                                "malicious": stats.get("malicious", 0),
+                                "suspicious": stats.get("suspicious", 0),
+                                "harmless": stats.get("harmless", 0),
+                                "undetected": stats.get("undetected", 0),
+                                "total": sum(stats.values())
+                            }
             
             return {"error": "Scan failed", "status": response.status_code}
             
@@ -51,7 +61,7 @@ class VirusTotalService:
             return {"error": str(e)}
     
     async def get_url_report(self, url: str) -> Dict[str, Any]:
-        """Get URL reputation report"""
+        """Get URL reputation report, falling back to scanning if not found"""
         if not self.api_key:
             return {"error": "API key not configured"}
         
@@ -76,8 +86,11 @@ class VirusTotalService:
                     "undetected": stats.get("undetected", 0),
                     "total": sum(stats.values()) if stats else 0
                 }
+            elif response.status_code == 404:
+                # URL is not in VirusTotal database, submit it for scan
+                return await self.scan_url(url)
             else:
-                return {"error": "URL not found", "status": response.status_code}
+                return {"error": f"URL lookup failed: {response.text}", "status": response.status_code}
                 
         except Exception as e:
             return {"error": str(e)}

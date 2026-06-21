@@ -1,4 +1,4 @@
-#!/home/hellbat/Project/Phishing Email Detector/email-threat-intel/backend/env/bin/python3.12
+#!/home/hellbat/Project/Phishing-Email-Detector/email-threat-intel/backend/env/bin/python
 """Type 99 (SPF) DNS conversion script.
 
 Copyright (c) 2005,2006 Stuart Gathman <stuart@bmsi.com>

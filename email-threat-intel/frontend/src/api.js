@@ -11,7 +11,7 @@ async function handleResponse(response) {
     try {
       const data = await response.json();
       errorMsg = data.error?.message || data.detail || errorMsg;
-    } catch (_) {
+    } catch {
       // ignore JSON parse failure
     }
     throw new Error(errorMsg);

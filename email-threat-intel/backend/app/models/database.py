@@ -8,9 +8,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/email_threat_db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./email_threat_db.sqlite3")
 
-engine = create_engine(DATABASE_URL)
+# Resolve relative SQLite path to the backend directory
+if DATABASE_URL.startswith("sqlite:///"):
+    db_path_part = DATABASE_URL[10:]
+    if not os.path.isabs(db_path_part):
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        if db_path_part.startswith("./"):
+            db_path_part = db_path_part[2:]
+        absolute_db_path = os.path.join(backend_dir, db_path_part)
+        DATABASE_URL = f"sqlite:///{absolute_db_path}"
+
+# SQLite-specific configuration
+if DATABASE_URL.startswith("sqlite"):
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False}
+    )
+else:
+    engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -31,6 +48,14 @@ class Email(Base):
     
     # Attachment Verdict
     attachment_verdict = Column(String(50), nullable=True)  # SAFE, SUSPICIOUS, MALICIOUS, NONE
+    
+    # Mesa Security Scanning Results
+    mesa_job_id = Column(String(255), nullable=True)  # Mesa job ID for this email
+    mesa_status = Column(String(50), nullable=True)  # pending, completed, failed
+    mesa_verdict = Column(String(100), nullable=True)  # phishing, malware, spam, clean, etc.
+    mesa_score = Column(Integer, default=0)  # Mesa threat score (0-100)
+    mesa_details = Column(JSON, nullable=True)  # Detailed Mesa scan results
+    mesa_scanned_at = Column(DateTime(timezone=True), nullable=True)  # When Mesa scan was completed
     
     # Threat Scores
     rule_score = Column(Integer, default=0)
