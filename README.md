@@ -78,7 +78,7 @@ From the `email-threat-intel/backend` directory (with virtual environment active
 ```bash
 python run.py
 ```
-*Note*: The API will start on [http://localhost:8000](http://localhost:8000). Interactive OpenAPI docs are available at [http://localhost:8000/docs](http://localhost:8000/docs).
+*Note*: The API will start on [http://localhost:8000](http://localhost:8000). Interactive OpenAPI docs are available at [http://localhost:8000/docs](http://localhost:8000/api/docs).
 
 ### 2. Launch the Frontend Server
 From the `email-threat-intel/frontend` directory:
