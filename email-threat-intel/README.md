@@ -90,9 +90,4 @@ npm run dev
 
 ---
 
-## Running Backend Automated Tests
-From the `backend` directory (with virtual environment active):
-```bash
-pytest
-```
-This runs the full test suite verifying endpoints, parsing algorithms, and local SQLite data operations.
+
